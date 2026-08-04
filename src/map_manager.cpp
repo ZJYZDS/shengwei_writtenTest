@@ -90,30 +90,30 @@ MapManager::Key MapManager::coordEncoder(uint32_t row, uint32_t col) {
 // in_tile — 点是否在 tile 矩形内
 // ============================================================================
 //
-// 纬度: [min_lat, max_lat] 区间判断 — 不再假定 top_left 一定是北边
+// 约定: top_left = 西北角(北边, 西边), bottom_right = 东南角(南边, 东边)
+//   即 tl.lat > br.lat, tl.lon < br.lon
 //
-// 经度: 先计算经度跨度 lon_max - lon_min
-//   正常 tile (span <= 180°): 点在 [lon_min, lon_max] 内
-//   日期线 tile (span > 180°): 点覆盖相反一侧, 在 [lon_max, 180°] ∪ [-180°, lon_min] 内
-//   例如 tl=175, br=-175 → span=350 > 180 → 实际跨 10°, 点在 >=175 OR <=-175
-//   例如 tl=117, br=100  → span=17 <= 180 → 用户仅交换东西角, 正常区间 [100, 117]
+// 纬度: [bottom_right.lat, top_left.lat]
+//
+// 经度: 两种情形
+//   正常 tile (不跨 ±180°): tl.lon <= br.lon → 点在 [tl.lon, br.lon] 内
+//   日期线 tile (跨 ±180°):  tl.lon > br.lon (如 175°→-175°)
+//     → 实际小跨度 (10°)，点在 tl.lon 以右 OR br.lon 以左
 // ============================================================================
 
 bool MapManager::in_tile(const Tile& tile, double lat, double lon) {
-    double lat_min = min(tile.top_left.latitude, tile.bottom_right.latitude);
-    double lat_max = max(tile.top_left.latitude, tile.bottom_right.latitude);
-    bool lat_ok = lat >= lat_min && lat <= lat_max;
-
-    double lon_min = min(tile.top_left.longitude, tile.bottom_right.longitude);
-    double lon_max = max(tile.top_left.longitude, tile.bottom_right.longitude);
+    bool lat_ok = lat >= tile.bottom_right.latitude &&
+                  lat <= tile.top_left.latitude;
 
     bool lon_ok;
-    if (lon_max - lon_min <= 180.0) {
-        // 正常 tile: 连续经度区间 [lon_min, lon_max]
-        lon_ok = lon >= lon_min && lon <= lon_max;
+    if (tile.top_left.longitude <= tile.bottom_right.longitude) {
+        // 正常 tile: 经度连续区间 [tl.lon, br.lon]
+        lon_ok = lon >= tile.top_left.longitude &&
+                 lon <= tile.bottom_right.longitude;
     } else {
-        // 日期线 tile: 覆盖 [lon_max, 180°] ∪ [-180°, lon_min]
-        lon_ok = lon >= lon_max || lon <= lon_min;
+        // 日期线 tile: 分两段 [tl.lon, 180°] ∪ [-180°, br.lon]
+        lon_ok = lon >= tile.top_left.longitude ||
+                 lon <= tile.bottom_right.longitude;
     }
     return lat_ok && lon_ok;
 }
@@ -122,39 +122,34 @@ bool MapManager::in_tile(const Tile& tile, double lat, double lon) {
 // overlaps_rect — 查询矩形与 tile 是否相交
 // ============================================================================
 //
-// 纬度: 标准区间相交判断 (不再假定 top_left 一定是北边)
+// 约定: 同 in_tile, top_left = 西北角, bottom_right = 东南角
 //
-// 经度: 先归一化两端点, 计算跨度 lon_max - lon_min
-//   正常 tile (span <= 180°): 连续区间 [lon_min, lon_max]
-//   日期线 tile (span > 180°): 反向区间 [lon_max, lon_min+360]
-// 然后用三窗口法 (-360/0/+360) 与查询矩形测试交集
+// 纬度: 标准区间相交判断
+//
+// 经度: 三窗口法处理日期线穿越
+//   正常 tile: tl.lon <= br.lon, 区间 [tl.lon, br.lon]
+//   日期线 tile: tl.lon > br.lon, 将 br.lon += 360 形成连续区间后三窗口测试
+//   任一偏移命中即判定相交
 // ============================================================================
 
 bool MapManager::overlaps_rect(const Tile& tile,
                                 double q_min_lat, double q_max_lat,
                                 double q_min_lon, double q_max_lon) {
-    double tile_min_lat = min(tile.top_left.latitude, tile.bottom_right.latitude);
-    double tile_max_lat = max(tile.top_left.latitude, tile.bottom_right.latitude);
+    double tile_min_lat = tile.bottom_right.latitude;
+    double tile_max_lat = tile.top_left.latitude;
     if (q_max_lat < tile_min_lat || q_min_lat > tile_max_lat)
         return false;
 
-    double lon_min = min(tile.top_left.longitude, tile.bottom_right.longitude);
-    double lon_max = max(tile.top_left.longitude, tile.bottom_right.longitude);
-
-    double a, b;
-    if (lon_max - lon_min <= 180.0) {
-        // 正常 tile: 连续区间 [lon_min, lon_max]
-        a = lon_min;
-        b = lon_max;
-    } else {
-        // 日期线 tile: 区间 [lon_max, lon_min+360] (如 175→185, 代表 175°→-175°)
-        a = lon_max;
-        b = lon_min + 360.0;
-    }
+    double tl_lon = tile.top_left.longitude;
+    double br_lon = tile.bottom_right.longitude;
+    // 日期线 tile: 将 br 加 360 使其 > tl, 形成连续区间
+    if (tl_lon > br_lon) br_lon += 360.0;
 
     // 三窗口: -360° / 0° / +360° 偏移
     for (double shift : { -360.0, 0.0, 360.0 }) {
-        if (max(a + shift, q_min_lon) <= min(b + shift, q_max_lon))
+        double a = tl_lon + shift;
+        double b = br_lon + shift;
+        if (max(a, q_min_lon) <= min(b, q_max_lon))
             return true;
     }
     return false;
@@ -164,28 +159,23 @@ bool MapManager::overlaps_rect(const Tile& tile,
 // Q1: insert — 插入 tile
 // ============================================================================
 //
+// 约定: top_left = 西北角, bottom_right = 东南角
+//
 // 1. 分配一次 shared_ptr<Tile>
-// 2. 归一化经纬度, 计算覆盖的 cell 范围
+// 2. 计算 tile 四个角对应的 cell (Jw2Coord)
 // 3. 遍历覆盖的所有 cell, 将指针写入每个 cell 的 vector
 //
-// 经度归一化: 计算 lon_min, lon_max, 跨度 = lon_max - lon_min
-//   span <= 180°: 正常 tile, 连续列区间 [c_min, c_max]
-//   span > 180°:  日期线 tile, 分两段 [c_max, width-1] 和 [0, c_min]
-// 例如 tl=117,br=100 → span=17≤180 → 列范围 [Jw2Coord(100), Jw2Coord(117)]
+// 跨日期线 tile: tl.lon > br.lon (c1 > c2), 分两段写入:
+//   [c1, res.width-1] (西段) 和 [0, c2] (东段)
 // ============================================================================
 
 bool MapManager::insert(const Tile& tile, const Resolution& res) {
     auto& grid = grids_[res];
     auto ptr = make_shared<const Tile>(tile);
 
-    double lat_min = min(tile.top_left.latitude, tile.bottom_right.latitude);
-    double lat_max = max(tile.top_left.latitude, tile.bottom_right.latitude);
-    double lon_min = min(tile.top_left.longitude, tile.bottom_right.longitude);
-    double lon_max = max(tile.top_left.longitude, tile.bottom_right.longitude);
-
-    auto [r1, c1] = Jw2Coord(lat_min, lon_min, res);
-    auto [r2, c2] = Jw2Coord(lat_max, lon_max, res);
-    uint32_t r_begin = r1, r_end = r2;
+    auto [r1, c1] = Jw2Coord(tile.top_left.latitude,     tile.top_left.longitude,     res);
+    auto [r2, c2] = Jw2Coord(tile.bottom_right.latitude, tile.bottom_right.longitude, res);
+    uint32_t r_begin = min(r1, r2), r_end = max(r1, r2);
 
     auto insert_columns = [&](uint32_t r, uint32_t c_begin, uint32_t c_end) {
         for (uint32_t c = c_begin; c <= c_end; ++c)
@@ -193,13 +183,13 @@ bool MapManager::insert(const Tile& tile, const Resolution& res) {
     };
 
     for (uint32_t r = r_begin; r <= r_end; ++r) {
-        if (lon_max - lon_min <= 180.0) {
-            // 正常 tile: 连续经度区间 [lon_min, lon_max]
+        if (c1 <= c2) {
+            // 正常 tile: 连续经度区间
             insert_columns(r, c1, c2);
         } else {
-            // 跨日期线: 分西段 [lon_max→180°] 和东段 [-180°→lon_min]
-            insert_columns(r, c2, res.width - 1);
-            insert_columns(r, 0, c1);
+            // 跨日期线: 分西段[175°→180°]和东段[-180°→-175°]
+            insert_columns(r, c1, res.width - 1);
+            insert_columns(r, 0, c2);
         }
     }
     return true;
@@ -209,7 +199,9 @@ bool MapManager::insert(const Tile& tile, const Resolution& res) {
 // Q1: remove — 删除 tile
 // ============================================================================
 //
-// 1. 归一化经纬度, 计算覆盖的 cell 范围 (同 insert)
+// 约定: 同 insert, top_left = 西北角, bottom_right = 东南角
+//
+// 1. 根据 tile 坐标计算覆盖的 cell
 // 2. 在每个 cell 的 vector 中按 6 字段精确匹配找到对应 shared_ptr
 // 3. erase 该指针 (shared_ptr 引用计数 -1)
 //    — 若其他 cell 不再引用, 内存自动释放
@@ -220,14 +212,9 @@ bool MapManager::remove(const Tile& tile, const Resolution& res) {
     if (it == grids_.end()) return false;
     auto& grid = it->second;
 
-    double lat_min = min(tile.top_left.latitude, tile.bottom_right.latitude);
-    double lat_max = max(tile.top_left.latitude, tile.bottom_right.latitude);
-    double lon_min = min(tile.top_left.longitude, tile.bottom_right.longitude);
-    double lon_max = max(tile.top_left.longitude, tile.bottom_right.longitude);
-
-    auto [r1, c1] = Jw2Coord(lat_min, lon_min, res);
-    auto [r2, c2] = Jw2Coord(lat_max, lon_max, res);
-    uint32_t r_begin = r1, r_end = r2;
+    auto [r1, c1] = Jw2Coord(tile.top_left.latitude,     tile.top_left.longitude,     res);
+    auto [r2, c2] = Jw2Coord(tile.bottom_right.latitude, tile.bottom_right.longitude, res);
+    uint32_t r_begin = min(r1, r2), r_end = max(r1, r2);
 
     auto remove_from_cell = [&](uint32_t r, uint32_t c) -> bool {
         auto& list = grid[coordEncoder(r, c)];
@@ -247,13 +234,14 @@ bool MapManager::remove(const Tile& tile, const Resolution& res) {
 
     bool removed = false;
     for (uint32_t r = r_begin; r <= r_end; ++r) {
-        if (lon_max - lon_min <= 180.0) {
+        if (c1 <= c2) {
             for (uint32_t c = c1; c <= c2; ++c)
                 removed |= remove_from_cell(r, c);
         } else {
-            for (uint32_t c = c2; c < res.width; ++c)
+            // 跨日期线分两段遍历
+            for (uint32_t c = c1; c < res.width; ++c)
                 removed |= remove_from_cell(r, c);
-            for (uint32_t c = 0; c <= c1; ++c)
+            for (uint32_t c = 0; c <= c2; ++c)
                 removed |= remove_from_cell(r, c);
         }
     }
