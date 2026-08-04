@@ -13,10 +13,12 @@ struct GpsCoordinate {
     ): latitude(j_), longitude(w_), altitude(h_){}
 };
 
+// 分辨率结构体
 struct Resolution {
     uint32_t height = 0;
     uint32_t width  = 0;
 
+    // 自定义红黑树的比较（用于 map 的 insert, find）
     bool operator<(const Resolution& o) const {
         if (height != o.height) return height < o.height;
         return width < o.width;
