@@ -85,14 +85,33 @@ grids_: map<Resolution, Grid>
 - **query_range**：度感知单参数解析 → 构造查询矩形 → rect_query_impl（cell 扫描 + overlaps_rect 精确过滤 + 指针去重）
 - **contains**：直接复用 query_point 的 optional 返回值
 
-**度感知范围解析 (resolve_range)**：
+**范围查询提供两个重载**：
 
-| 输入 r | 行为 | 输出 |
-|--------|------|------|
-| r < 0 | [warn] 取绝对值，递归 | — |
-| r >= 180 | [warn] clamp 到 180 | — |
-| 90 < r < 180 | [warn] 超纬度上限 | lon_range=r, lat_range=0 |
-| r <= 90 | [info] 合法 | lon_range=r, lat_range=r |
+**1. 单参数版本** `query_range(lat, lon, range, res)` — 用户只给一个度数，内部调用 `resolve_range(range)` 自动判断意图：
+
+```
+输入 range 为负数
+  → [warn] 取绝对值，递归回 resolve_range(|range|) 重新判断
+  → 例如 -30° 变为 30°，最终按 r<=90° 处理为 30°×30° 矩形
+
+输入 range >= 180°
+  → [warn] "clamped to 180"，截断到 180°，继续后续判断
+  → 180° > 90°，落入下一条，最终按 lon_range=180°, lat_range=0 处理（全球经度扫描）
+
+输入 90° < range < 180°
+  → [warn] "lat max=90"，经度方向取 range 全值，纬度方向归零
+  → 例如 120° 输出 lon_range=120°, lat_range=0°（仅经度方向带状查询）
+
+输入 range <= 90°
+  → [info] 经纬度均可接受，lon_range=range, lat_range=range
+  → 例如 1.0° 输出 1.0°×1.0° 正方形查询区域
+```
+
+**设计理由**：实际使用中用户可能随手传入任意数值，程序需要合理推测用户意图，而非直接报错。负数取绝对值是容错；超大值 clamp 到 180° 保证全球覆盖而非静默丢弃数据；超过纬度上限 90° 的值只可能是用户想表达纯经度方向的搜索。
+
+**2. 双参数版本** `query_range(lat, lon, lon_range, lat_range, res)` — 用户显式指定经度和纬度方向的半跨度，不做任何度感知推测，直接用给定的 lon_range 和 lat_range 构造矩形查询。
+
+**双参数回退到单参数**：当调用双参数版本时不传 lat_range（默认值 `-inf`），输出 `[warn]` 并自动回退到单参数版本，走上述完整的度感知决策树。
 
 **overlaps_rect 三窗口法**：将 tile 经度区间分别偏移 -360°/0°/+360°，与查询区间测试交集，任一命中即判定相交。这是处理圆形坐标轴（lon 在 ±180° 处闭环）的标准方法。
 
