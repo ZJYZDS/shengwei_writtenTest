@@ -32,13 +32,20 @@ int Graph::node_count() const {
 }
 
 // ============================================================================
-// ensure_floyd — Floyd-Warshall 全源最短路预计算
+// ensure_floyd — Floyd-Warshall 全源最短路预计算（无向图对称优化）
 // ============================================================================
 //
-// O(V^3) 三重循环:
-//   初始化: dist[i][i]=0, 有边的 dist[i][j]=weight, next[i][j]=j
-//   松弛:   dist[i][k] + dist[k][j] < dist[i][j] 时更新
-//   不可达: dist[i][j]=inf, next[i][j]=-1
+// 无向图距离矩阵对称: dist[i][j] == dist[j][i]
+// 最短路径可逆:    i→j 路径反转即 j→i 路径
+// 因此只计算上三角 (j > i)，镜像到下半部分，节省约一半计算量
+//
+// 初始化: dist[i][i]=0, 有边的 dist[i][j]=dist[j][i]=weight
+//          next[i][j]=j, next[j][i]=i
+// 松弛:   j>i 的上三角内，若 dist[i][k]+dist[k][j] < dist[i][j]
+//         则 dist[i][j]=dist[j][i]=nd
+//            next[i][j]=next[i][k] (i 出发去 j 的下一步 = i 出发去 k 的下一步)
+//            next[j][i]=next[j][k] (j 出发去 i 的下一步 = j 出发去 k 的下一步)
+// 不可达: dist[i][j]=inf, next[i][j]=-1
 // ============================================================================
 
 void Graph::ensure_floyd() {
@@ -48,7 +55,7 @@ void Graph::ensure_floyd() {
 
     const double INF = numeric_limits<double>::infinity();
 
-    // 初始化距离矩阵和前驱矩阵
+    // 初始化矩阵: 对角线=0, 不可达=INF
     dist_.assign(n, vector<double>(n, INF));
     next_.assign(n, vector<int>(n, -1));
 
@@ -57,25 +64,30 @@ void Graph::ensure_floyd() {
         next_[i][i] = i;
     }
 
+    // 从邻接表填充初始边，双向对称写入
     for (int u = 0; u < n; ++u) {
         for (const auto& [v, w] : adj_[u]) {
             if (w < dist_[u][v]) {
                 dist_[u][v] = w;
+                dist_[v][u] = w;   // 无向图对称
                 next_[u][v] = v;
+                next_[v][u] = u;
             }
         }
     }
 
-    // Floyd 三重循环: k 为中间节点
+    // Floyd 三重循环: 只计算上三角 (j > i)，镜像到下半
     for (int k = 0; k < n; ++k) {
         for (int i = 0; i < n; ++i) {
             if (dist_[i][k] == INF) continue;
-            for (int j = 0; j < n; ++j) {
+            for (int j = i + 1; j < n; ++j) {   // 上三角
                 if (dist_[k][j] == INF) continue;
                 double nd = dist_[i][k] + dist_[k][j];
                 if (nd < dist_[i][j]) {
                     dist_[i][j] = nd;
-                    next_[i][j] = next_[i][k];
+                    dist_[j][i] = nd;            // 镜像: 对称矩阵
+                    next_[i][j] = next_[i][k];   // i→j: 先去 k
+                    next_[j][i] = next_[j][k];   // j→i: 先去 k (即反向路径的第一步)
                 }
             }
         }
