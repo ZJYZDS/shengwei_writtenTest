@@ -68,9 +68,9 @@ int main() {
     assert(tiles4.size() >= 1);
     cout << "Q2 query_range (negative -> abs): OK" << endl;
 
-    // Q2: query_range — >=180 (auto %180)
+    // Q2: query_range — >=180 (clamp to 180)
     auto tiles5 = mgr.query_range(39.5, 116.5, 200.0, low);
-    cout << "Q2 query_range ( >=180 -> %180): " << tiles5.size() << " tiles" << endl;
+    cout << "Q2 query_range ( >=180 -> clamp 180): " << tiles5.size() << " tiles" << endl;
 
     // Q2: date-line crossing
     Tile date_tile = {
