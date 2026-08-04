@@ -40,21 +40,27 @@ else()
 endif()
 
 
-set(SOURCES
-    src/main.cpp
+# ---- Q1: MapManager 测试 ----
+add_executable(Q1_answer_test
+    src/test/Q1_answer_test.cpp
     src/map_manager.cpp
+)
+
+# ---- Q2: Graph 测试 ----
+add_executable(Q2_answer_test
+    src/test/Q2_answer_test.cpp
     src/graph.cpp
 )
 
-
-add_executable(written_test ${SOURCES})
-
-target_link_libraries(written_test
-    ${PCL_LIBRARIES}
-)
+target_link_libraries(Q1_answer_test ${PCL_LIBRARIES})
+target_link_libraries(Q2_answer_test ${PCL_LIBRARIES})
 
 if(CUDA_FOUND)
-    target_link_libraries(written_test
+    target_link_libraries(Q1_answer_test
+        ${CUDA_CUBLAS_LIBRARIES}
+        ${CUDA_CUFFT_LIBRARIES}
+    )
+    target_link_libraries(Q2_answer_test
         ${CUDA_CUBLAS_LIBRARIES}
         ${CUDA_CUFFT_LIBRARIES}
     )
