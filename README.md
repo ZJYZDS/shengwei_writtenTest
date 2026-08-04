@@ -5,14 +5,16 @@
 ```
 shengwei_writtenTest/
 ├── include/
-│   ├── common_types.h      # GpsCoordinate, Resolution, Tile 类型定义
-│   ├── map_manager.h       # MapManager: 多分辨率地图块管理器
-│   └── graph.h             # Graph: 无向图 + Floyd-Warshall 全源最短路径
+│   ├── common_types.h        # GpsCoordinate, Resolution, Tile 类型定义
+│   ├── map_manager.h         # MapManager: 多分辨率地图块管理器
+│   └── graph.h               # Graph: 无向图 + Floyd-Warshall 全源最短路径
 ├── src/
-│   ├── map_manager.cpp     # MapManager 实现
-│   ├── graph.cpp           # Graph 实现
-│   └── main.cpp            # 测试用例
-├── CMakeLists.txt          # CMake 构建配置 (C++17, Eigen, PCL, CUDA)
+│   ├── map_manager.cpp       # MapManager 实现
+│   ├── graph.cpp             # Graph 实现
+│   └── test/
+│       ├── Q1_answer_test.cpp # Q1-Q3 测试 (MapManager)
+│       └── Q2_answer_test.cpp # 图算法测试 (Graph)
+├── CMakeLists.txt            # CMake 构建配置 (C++17, Eigen, PCL, CUDA)
 └── README.md
 ```
 
@@ -21,43 +23,208 @@ shengwei_writtenTest/
 ```bash
 mkdir build && cd build
 cmake .. && make
-./written_test
+
+# Q1-Q3: 地图块管理器
+./Q1_answer_test
+
+# 无向图最短路径
+./Q2_answer_test
 ```
 
-## 运行结果
+每个测试程序支持两种运行模式：
+- **模式 1（自动）**：直接输出完整可视化测试结果，无需手动输入
+- **模式 2（手动）**：交互式操作，附样例提示，可自定义输入
+
+## 运行结果 (自动模式)
+
+### Q1_answer_test
 
 ```
-=== MapManager ===
-Q1 insert/get_all: OK
-Q1 remove: OK
-Q2 query_point: OK
-Q2 contains: OK
-Q2 query_range (single <=90): OK
-Q2 query_range (two args): OK
+================================================
+  Q1: 插入 / 检索 / 删除
+================================================
 
---- degree-aware tests ---
+插入测试数据:
+   Tile A: top_left(40.0000°, 116.0000°) bottom_right(39.0000°, 117.0000°)
+   Tile B: top_left(41.0000°, 116.0000°) bottom_right(40.5000°, 116.5000°)
+
+[OK] Tile A 插入 low(10×10)、high(100×100) 两层
+[OK] Tile B 插入 low(10×10) 层
+
+get_all(low): 共 2 个 tile (期望 2)
+   [0] tl(40.0000, 116.0000) br(39.0000, 117.0000)
+   [1] tl(41.0000, 116.0000) br(40.5000, 116.5000)
+
+删除 Tile A (low 层)...
+删除后 get_all(low): 共 1 个 tile (期望 1)
+[OK] remove 成功, shared_ptr 引用计数递减
+
+================================================
+  Q2: 点查询 / 范围查询 / 包含判断
+================================================
+
+query_point(39.5000°, 116.5000°, low):
+  命中 Tile: tl(40.0000, 116.0000) br(39.0000, 117.0000)
+[OK] 点 (39.5000°, 116.5000°) 在 Tile A 内
+
+contains 测试:
+   (40.5°, 116.3°) -> YES (期望 YES)
+   (0.0°, 0.0°)    -> NO (期望 NO)
+[OK] contains 正确
+
+--- query_range 单参数 (度感知解析) ---
+输入: lat=39.5°, lon=116.5°, range=1.0°
+[info] range = 1.0000 <= 90, set as both lon_range and lat_range
+  输出: 2 个 tile (期望 >=1)
+
+--- query_range 双参数 ---
+输入: lat=39.5°, lon=116.5°, lon_range=1.0°, lat_range=0.5°
+  输出: 1 个 tile (期望 >=1)
+[OK] 双参数范围查询可用
+
+================================================
+  Q2 续: 度感知边界测试
+================================================
+
+输入 range=120° (>90, 超纬度上限):
 [warn] range = 120 > 90 (lat max=90), lon_range=120, lat_range=0
-Q2 query_range (single >90): 1 tiles
+  输出: 1 个 tile (lon_range=120°, lat_range=0°)
+
+输入 range=-30° (负数, 自动 abs):
 [warn] range = -30 < 0, taking abs
-[info] range = 30 <= 90, set as both lon_range and lat_range
-Q2 query_range (negative -> abs): OK
+[info] range = 30.0000 <= 90, set as both lon_range and lat_range
+  输出: 2 个 tile (等价于 range=30°)
+
+输入 range=200° (>=180, clamp to 180):
 [warn] range = 200 >= 180, clamped to 180
 [warn] range = 180 > 90 (lat max=90), lon_range=180, lat_range=0
-Q2 query_range ( >=180 -> clamp 180): 1 tiles
-[info] range = 3 <= 90, set as both lon_range and lat_range
-Q2 date-line wrap: OK
-Q3 resolutions: 2 levels
+  输出: 1 个 tile (lon_range=180°, lat_range=0° 全球扫描)
 
-=== Graph ===
-Graph node_count: OK
-Path 0->3: 0 1 2 3 (expected 0 1 2 3)
+--- 双参数回退到单参数 (lat_range 未提供, 哨兵 -inf) ---
+[warn] lat_range not provided, falling back to single-number degree-aware logic
+[info] range = 1.0000 <= 90, set as both lon_range and lat_range
+  输出: 2 个 tile (自动回退到单参数逻辑, range=1° -> 1°×1°)
 
-All tests passed.
+[OK] 度感知边界: 负数→abs | >=180→clamp | >90→纯经度 | <=90→经纬同范围 | 双参数可回退
+
+================================================
+  Q2 续: 国际日期线 (±180°) 穿越测试
+================================================
+
+插入跨日期线 Tile: tl(42.0000°, 175.0000°) br(40.0000°, -175.0000°)
+  实际经度跨度: 175° → -175° = 10°
+
+点查询测试:
+   (41.0°,  179.0°) in tile? YES (期望 YES)
+   (41.0°, -178.0°) in tile? YES (期望 YES)
+   (41.0°,    0.0°) in tile? NO (期望 NO)
+
+范围查询: lat=41.0°, lon=178.0°, range=3.0°
+  输出: 1 个 tile (期望 >=1, 含跨日期线 tile)
+
+[OK] 日期线穿越: in_tile || 判断 / overlaps_rect 三窗口法 / insert 分两段写
+
+================================================
+  Q3: 多分辨率管理
+================================================
+
+已注册分辨率: 2 层
+   [0] Resolution(10×10): 3 个 tile
+   [1] Resolution(100×100): 1 个 tile
+
+[OK] 多分辨率同时管理, 不同分辨率层数据完全隔离
+
+================================================
+  Q1-Q3 MapManager 全部测试通过
+================================================
+```
+
+### Q2_answer_test
+
+```
+================================================
+  自动模式: 随机生成无向图
+================================================
+
+节点数: 6 (编号 0 ~ 5)
+
+添加边 (权重 1.0 ~ 10.0 随机分布):
+  0 --- 1  weight=4.7 (主干边)
+  1 --- 2  weight=4.8 (主干边)
+  2 --- 3  weight=9.7 (主干边)
+  3 --- 4  weight=9.5 (主干边)
+  4 --- 5  weight=9.1 (主干边)
+
+额外随机边:
+  5 --- 1  weight=14.8
+  3 --- 0  weight=1.6
+  5 --- 3  weight=3.1
+
+================================================
+  全节点对最短路径 (Floyd-Warshall 对称优化)
+================================================
+
+Floyd-Warshall O(V^3) 预计算...
+对称优化: 只计算上三角, 镜像到下半
+
+  0 → 1: 0 → 1  (步数: 1)
+  0 → 2: 0 → 1 → 2  (步数: 2)
+  0 → 3: 0 → 3  (步数: 1)       ← 捷径边 0-3(1.6) 替代链式绕路
+  0 → 4: 0 → 3 → 4  (步数: 2)
+  0 → 5: 0 → 3 → 5  (步数: 2)   ← 捷径边 3-5(3.1)
+  1 → 2: 1 → 2  (步数: 1)
+  ...
+
+================================================
+  反向路径对称性验证
+================================================
+
+正向 0 → 5: 0 → 3 → 5
+反向 5 → 0: 5 → 3 → 0
+
+正向路径长度: 3, 反向路径长度: 3
+[OK] 距离矩阵对称性: 正向与反向路径互为反转
+
+================================================
+  边界情况: 不可达节点
+================================================
+
+find_path(0, 16): 节点 16 不存在
+  返回: nullopt (不可达)
+[OK] 越界节点正确返回 nullopt
+
+================================================
+  延迟计算验证 (dirty_ 标志位)
+================================================
+
+构建新图: 0-1(w=1.0), 1-2(w=2.0)
+  首次 find_path(0,2): 0 → 1 → 2 (触发 Floyd 预计算)
+  二次 find_path(0,1): 0 → 1 (不触发重算, dirty_=false)
+
+  添加新边 2-3(w=3.0), dirty_=true
+  再次 find_path(0,3): 0 → 1 → 2 → 3 (触发重算)
+[OK] dirty_ 标志位正确控制 Floyd 重算时机
+
+================================================
+  Q2 Graph 全部测试通过
+================================================
 ```
 
 ---
 
 ## 一、工程算法题：多分辨率地图块管理器
+
+### Tile 坐标约定
+
+```
+top_left  = 西北角 (纬度大, 经度小)
+bottom_right = 东南角 (纬度小, 经度大)
+
+正常 tile:  tl.lat > br.lat,  tl.lon < br.lon
+日期线 tile: tl.lat > br.lat,  tl.lon > br.lon  (如 175° → -175°, 跨 10°)
+```
+
+违反约定（tl.lon > br.lon 但跨度 ≤ 180°）的输入视为日期线穿越，不会自动纠错。
 
 ### Q1: 基础增删查
 
@@ -77,7 +244,7 @@ grids_: map<Resolution, Grid>
 
 **去重策略**：get_all / rect_query 中维护 `vector<const Tile*> seen`，按裸指针地址去重。同一次 insert 的 shared_ptr 地址相同，避免按浮点字段比较的不稳定性。
 
-**日期线处理**：当 `top_left.lon > bottom_right.lon`（如 175° → -175°），tile 跨 ±180°。insert 时分两段写入 cell：`[c1, width-1]`（西段）和 `[0, c2]`（东段）。in_tile 用 `||` 判断：点落在 tl.lon 以右 **或** br.lon 以左即命中。
+**日期线处理**：当 `top_left.lon > bottom_right.lon`（如 175° → -175°），tile 跨 ±180°。insert/remove 时分两段写入 cell：`[c1, width-1]`（西段）和 `[0, c2]`（东段）。in_tile 用 `||` 判断：点落在 tl.lon 以右 **或** br.lon 以左即命中。
 
 ### Q2: 空间查询
 
@@ -144,8 +311,6 @@ for k in 0..n-1:
         next[i][j] = next[i][k]   // i→j: 先去 k
         next[j][i] = next[j][k]   // j→i: 先去 k (反向路径第一步)
 ```
-
-**测试用例**：节点 0-1-2-3 链式连接，权重均为 1.0；另加直接边 0→3 权重 10.0。最短路径应绕过直接边走 0→1→2→3（总权重 3.0 < 10.0）。输出 `0 1 2 3`，验证正确。
 
 **延迟计算**：`dirty_` 标志位跟踪邻接表变更。add_edge 后置 true，下次 find_path 触发 ensure_floyd() 重算。连续查询不重复计算。
 
