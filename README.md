@@ -11,9 +11,15 @@ shengwei_writtenTest/
 ├── src/
 │   ├── map_manager.cpp       # MapManager 实现
 │   ├── graph.cpp             # Graph 实现
+│   ├── sfm.cpp               # SfM 完整流水线 (F→E→R,t→三角化)
 │   └── test/
 │       ├── Q1_answer_test.cpp # Q1-Q3 测试 (MapManager)
 │       └── Q2_answer_test.cpp # 图算法测试 (Graph)
+├── scripts/
+│   ├── Q3_1/
+│   │   ├── Depth_model_estimation.py  # YOLO 深度估计 (nuScenes 数据)
+│   │   └── example_depth_model.py     # YOLO 深度估计 (COCO 示例)
+│   └── test_images/                   # 输入图 + 输出图
 ├── CMakeLists.txt            # CMake 构建配置 (C++17, Eigen, PCL, CUDA)
 └── README.md
 ```
@@ -29,6 +35,9 @@ cmake .. && make
 
 # 无向图最短路径
 ./Q2_answer_test
+
+# SfM 完整流水线 (合成数据自验证)
+./Q3_sfm
 ```
 
 每个测试程序支持两种运行模式：
@@ -354,3 +363,137 @@ for k in 0..n-1:
 - **传感器噪声与稀疏性**：远距离点云稀疏，地面分割可能失败（地面点过少或噪声过大）。可通过多帧融合或引入 IMU 约束提高鲁棒性。
 - **计算效率**：大范围场景的点云存储和查询开销大。八叉树 + 体素降采样 + 局部地图（sliding window）是常用平衡策略。
 - **地形适应性**：纯几何方法在斜坡、台阶、草地等场景可能误判。可结合法向量分析和 traversability estimation 增强判断。
+
+---
+
+## 四、SfM 完整流水线实现
+
+### 代码文件
+
+`src/sfm.cpp` — 包含 Step 0-5 完整 SfM 流水线 + 合成数据自验证。
+
+### 内参 K（自标定 RealSense D435，仅在此使用）
+
+来源：`/home/zjy/.ros/camera_info_06/ost.yaml`，640x480。
+
+```
+fx = 456.563  fy = 455.041  cx = 345.191  cy = 213.798
+```
+
+### 流水线概览
+
+```
+set_k_minus_1 / set_k / matches
+    │  extractAlignedPoints()
+    ▼  pts1[i] ↔ pts2[i]  (对齐点对, ≥8)
+    │  computeFundamentalMatrix()      [Step 1-2]
+    ▼  F  (归一化八点法 + 秩-2 强制)
+    │  computeEssentialMatrix()        [Step 3]
+    ▼  E = Kᵀ F K
+    │  recoverPose()                   [Step 4]
+    ▼  R, t  (SVD 分解, 4 候选正深度投票)
+    │  triangulateAll()                [Step 5]
+    ▼  3D points  (DLT, A₄ₓ₄ X=0)
+```
+
+### 各函数说明
+
+| 函数 | 职责 | 核心算法 |
+|------|------|----------|
+| `computeMean` | 计算点集质心 | 算术平均 |
+| `normalizePoints` | Hartley 归一化 | 平移至质心，缩放使平均距离=√2 |
+| `computeFundamentalMatrix` | 求基础矩阵 F | 归一化八点法，SVD 解 Af=0，强制 det(F)=0 |
+| `computeEssentialMatrix` | 求本质矩阵 E | E = Kᵀ F K |
+| `recoverPose` | 从 E 分解 R, t | SVD: E=UΣVᵀ, W 矩阵, 4 候选, Chierality 投票 |
+| `countPositiveDepth` | 正深度点统计 | 对每组 (R,t) 三角化全部点，统计 Z>0 数量 |
+| `triangulate` | 单点三角化 | DLT: x×(PX)=0, SVD 解齐次坐标 |
+| `triangulateAll` | 批量三角化 | 遍历所有匹配对 |
+| `extractAlignedPoints` | 根据 matches 提取对齐点对 | pts1[i] ↔ pts2[i] 一一对应 |
+| `generateSyntheticData` | 生成合成测试数据 | 随机 3D 点投影到两帧，已知 GT 位姿 |
+
+### 核心公式
+
+**Step 1-2 归一化八点法**：
+- 归一化: T₁, T₂ 使得 `(1/n) Σ ‖x̂ - centroid‖ = √2`
+- A 矩阵: `[u₁u₂, v₁u₂, u₂, u₁v₂, v₁v₂, v₂, u₁, v₁, 1]`
+- SVD: `A = U Σ Vᵀ`, f = V 最后一列, F̂ = reshape(f)
+- 秩-2 强制: 设最小奇异值为 0
+- 去归一化: `F = T₂ᵀ F̂ T₁`
+
+**Step 3 本质矩阵**：`E = Kᵀ F K`
+
+推导：`x'ᵀ F x = 0` 且 `x = K x̂`，代入得 `(K x̂')ᵀ F (K x̂) = 0 ⇒ x̂'ᵀ (Kᵀ F K) x̂ = 0`
+
+**Step 4 位姿分解**：
+
+```
+E = U Σ Vᵀ,  Σ = diag(1, 1, 0)  (强制修正)
+
+    [0 -1 0]
+W = [1  0 0]
+    [0  0 1]
+
+4 候选:
+  1. R = UWVᵀ,  t = +U₃
+  2. R = UWVᵀ,  t = -U₃
+  3. R = UWᵀVᵀ, t = +U₃
+  4. R = UWᵀVᵀ, t = -U₃
+
+选择：对每组 (R,t) 三角化所有匹配点，统计双相机前向点数 (Z₁>0 ∧ Z₂>0)，
+      取最大者。
+```
+
+**Step 5 DLT 三角化**：
+
+```
+P₁ = [I | 0],  P₂ = [R | t]  (归一化相机)
+
+对每对匹配 (x, x'):
+  A = [u₁·P₁[2] - P₁[0]]
+      [v₁·P₁[2] - P₁[1]]
+      [u₂·P₂[2] - P₂[0]]
+      [v₂·P₂[2] - P₂[1]]
+
+  SVD: A = U Σ Vᵀ, X = V 最后一列 (4D 齐次)
+  X₃D = (X₀/X₃, X₁/X₃, X₂/X₃)
+```
+
+### 合成数据自验证结果
+
+使用 30 个随机 3D 点 (Z: 2~8m)，GT 位姿 (绕 Y 轴 5°，右移 0.3m)：
+
+```
+--- Ground Truth ---
+R_gt =
+  0.996195          0  0.0871557
+         0          1          0
+-0.0871557          0   0.996195
+t_gt =  0.3 0.05  0.1
+
+Loaded 30 aligned matches.
+
+F =
+ 1.77248e-07  4.08106e-06  -0.00185869
+-5.13258e-06  8.96466e-13   0.00717779
+  0.00196113  -0.00699849    0.0197319
+
+E =
+  0.0369474    0.847859   -0.422312
+   -1.06632 1.85624e-07     2.45999
+   0.422312    -2.54356   0.0369472
+
+R_est =
+    0.996195 -1.04308e-07    0.0871558
+ 2.98023e-08            1   8.9407e-08
+  -0.0871558 -1.19209e-07     0.996195
+t_est (normalized) = 0.937042 0.156173 0.312349
+
+--- Error ---
+Rotation error: 0 deg
+Translation error: 0 deg
+
+Triangulated 30 3D points.
+3D RMSE (scale-aligned): 6.27606e-06 m
+```
+
+精度：旋转 0°，平移方向 0°，3D 重建 RMSE ~6.3e-6 m（浮点数值精度级别）。

@@ -3,6 +3,7 @@ project(shengwei_written_test LANGUAGES C CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
@@ -54,6 +55,13 @@ add_executable(Q2_answer_test
 
 target_link_libraries(Q1_answer_test ${PCL_LIBRARIES})
 target_link_libraries(Q2_answer_test ${PCL_LIBRARIES})
+
+# ---- Q3: SfM ----
+add_executable(Q3_sfm
+    src/sfm.cpp
+)
+target_include_directories(Q3_sfm PRIVATE ${EIGEN3_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
+target_link_libraries(Q3_sfm ${PCL_LIBRARIES})
 
 if(CUDA_FOUND)
     target_link_libraries(Q1_answer_test
